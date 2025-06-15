@@ -2,6 +2,7 @@
 use std::net::TcpListener;
 use std::{
     collections::HashMap,
+    env, fs,
     io::{Read, Write},
     net::TcpStream,
     thread,
@@ -47,7 +48,14 @@ fn request_parser(request: &str) -> Request {
     }
 }
 
-fn response_with_body(body: &str) -> String {
+fn response_with_body(body: &str, file: bool) -> String {
+    if file {
+        return format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            body
+        );
+    }
     format!(
         "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\n\r\n{}",
         body.len(),
@@ -55,7 +63,7 @@ fn response_with_body(body: &str) -> String {
     )
 }
 
-fn handle_connection(stream: &mut TcpStream) {
+fn handle_connection(stream: &mut TcpStream, dir: Option<String>) {
     println!("accepted new connection");
     let mut buffer = [0; 1024];
     let bytes_read = stream.read(&mut buffer).unwrap();
@@ -65,9 +73,17 @@ fn handle_connection(stream: &mut TcpStream) {
     let response = if path == "/" {
         "HTTP/1.1 200 OK\r\n\r\n".to_string()
     } else if path == "/user-agent" {
-        response_with_body(request_parsed.headers.get("User-Agent").unwrap())
+        response_with_body(request_parsed.headers.get("User-Agent").unwrap(), false)
     } else if path.starts_with("/echo") {
-        response_with_body(&path[6..])
+        response_with_body(&path[6..], false)
+    } else if path.starts_with("/files") {
+        let file_name = &path[7..];
+        let file_path = format!("{}/{}", dir.unwrap(), file_name);
+        if let Ok(content) = fs::read_to_string(file_path) {
+            response_with_body(&content, true)
+        } else {
+            "HTTP/1.1 404 Not Found\r\n\r\n".to_string()
+        }
     } else {
         "HTTP/1.1 404 Not Found\r\n\r\n".to_string()
     };
@@ -76,13 +92,28 @@ fn handle_connection(stream: &mut TcpStream) {
 }
 
 fn main() {
+    let args: Vec<String> = env::args().collect();
+    let dir = if args.len() > 2 {
+        args[2].clone()
+    } else {
+        "".to_string()
+    };
+
     let listener = TcpListener::bind("127.0.0.1:4221").unwrap();
 
     for stream in listener.incoming() {
         match stream {
             Ok(mut _stream) => {
+                let dir_clone = dir.clone();
                 thread::spawn(move || {
-                    handle_connection(&mut _stream);
+                    handle_connection(
+                        &mut _stream,
+                        if !dir_clone.is_empty() {
+                            Some(dir_clone)
+                        } else {
+                            None
+                        },
+                    );
                 });
             }
             Err(e) => {
