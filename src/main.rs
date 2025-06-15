@@ -45,6 +45,14 @@ fn request_parser(request: &str) -> Request {
     }
 }
 
+fn response_with_body(body: &str) -> String {
+    format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\n\r\n{}",
+        body.len(),
+        body
+    )
+}
+
 fn main() {
     let listener = TcpListener::bind("127.0.0.1:4221").unwrap();
 
@@ -58,13 +66,13 @@ fn main() {
                 let request_parsed = request_parser(&request);
                 println!("Request: {:?}", request_parsed);
                 let path = &request_parsed.path;
-                let mut response: &str;
-                if path == "/" {
-                    response = "HTTP/1.1 200 OK\r\n\r\n";
+                let response = if path == "/" {
+                    "HTTP/1.1 200 OK\r\n\r\n".to_string()
+                } else if path.starts_with("/echo") {
+                    response_with_body(&path[6..])
                 } else {
-                    response = "HTTP/1.1 404 Not Found\r\n\r\n";
-                }
-
+                    "HTTP/1.1 404 Not Found\r\n\r\n".to_string()
+                };
                 _stream.write_all(response.as_bytes()).unwrap();
                 _stream.flush().unwrap();
             }
