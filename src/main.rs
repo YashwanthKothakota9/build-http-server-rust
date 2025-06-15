@@ -70,6 +70,7 @@ fn handle_connection(stream: &mut TcpStream, dir: Option<String>) {
     let request = String::from_utf8_lossy(&buffer[..bytes_read]);
     let request_parsed = request_parser(&request);
     let path = &request_parsed.path;
+    let method = &request_parsed.method;
     let response = if path == "/" {
         "HTTP/1.1 200 OK\r\n\r\n".to_string()
     } else if path == "/user-agent" {
@@ -79,10 +80,25 @@ fn handle_connection(stream: &mut TcpStream, dir: Option<String>) {
     } else if path.starts_with("/files") {
         let file_name = &path[7..];
         let file_path = format!("{}/{}", dir.unwrap(), file_name);
-        if let Ok(content) = fs::read_to_string(file_path) {
-            response_with_body(&content, true)
+        if method == "GET" {
+            if let Ok(content) = fs::read_to_string(file_path) {
+                response_with_body(&content, true)
+            } else {
+                "HTTP/1.1 404 Not Found\r\n\r\n".to_string()
+            }
+        } else if method == "POST" {
+            let content_length = request_parsed.headers.get("Content-Length").unwrap();
+            let content_length_int = content_length.parse::<usize>().unwrap();
+            let body = request_parsed.body;
+            if body.len() != content_length_int {
+                "HTTP/1.1 400 Bad Request\r\n\r\n".to_string()
+            } else if fs::write(file_path, body).is_ok() {
+                "HTTP/1.1 201 Created\r\n\r\n".to_string()
+            } else {
+                "HTTP/1.1 500 Internal Server Error\r\n\r\n".to_string()
+            }
         } else {
-            "HTTP/1.1 404 Not Found\r\n\r\n".to_string()
+            "HTTP/1.1 405 Method Not Allowed\r\n\r\n".to_string()
         }
     } else {
         "HTTP/1.1 404 Not Found\r\n\r\n".to_string()
