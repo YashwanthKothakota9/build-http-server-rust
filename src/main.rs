@@ -68,6 +68,8 @@ fn main() {
                 let path = &request_parsed.path;
                 let response = if path == "/" {
                     "HTTP/1.1 200 OK\r\n\r\n".to_string()
+                } else if path == "/user-agent" {
+                    response_with_body(request_parsed.headers.get("User-Agent").unwrap())
                 } else if path.starts_with("/echo") {
                     response_with_body(&path[6..])
                 } else {
