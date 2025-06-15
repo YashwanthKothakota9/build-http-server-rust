@@ -60,20 +60,42 @@ fn gzip_compress(body: &str) -> Vec<u8> {
     encoder.finish().unwrap()
 }
 
-fn response_with_body_compressed(body: Vec<u8>) -> Response {
-    let header = format!(
+fn response_with_body_compressed(body: Vec<u8>, close: bool) -> Response {
+    let mut header = String::new();
+    if close {
+        header = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Encoding: gzip\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+        )
+    } else {
+        header = format!(
         "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Encoding: gzip\r\nContent-Length: {}\r\n\r\n",
         body.len()
-    );
+    )
+    }
     let mut response = header.into_bytes();
     response.extend(body);
     Response::Bytes(response)
 }
 
-fn response_with_body(body: &str, file: bool) -> Response {
+fn response_with_body(body: &str, file: bool, close: bool) -> Response {
     if file {
-        return Response::String(format!(
+        if close {
+            return Response::String(format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body ));
+        } else {
+            return Response::String(format!(
             "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            body
+        ));
+        }
+    }
+    if close {
+        return Response::String(format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
             body.len(),
             body
         ));
@@ -107,25 +129,37 @@ fn handle_connection(stream: &mut TcpStream, dir: Option<String>) {
         let path = &request_parsed.path;
         let method = &request_parsed.method;
 
+        let connection_close_value = request_parsed.headers.get("Connection");
+        let connection_close =
+            connection_close_value.is_some() && connection_close_value.unwrap() == "close";
+
         let response = if path == "/" {
-            Response::String("HTTP/1.1 200 OK\r\n\r\n".to_string())
+            if connection_close {
+                Response::String("HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n".to_string())
+            } else {
+                Response::String("HTTP/1.1 200 OK\r\n\r\n".to_string())
+            }
         } else if path == "/user-agent" {
-            response_with_body(request_parsed.headers.get("User-Agent").unwrap(), false)
+            response_with_body(
+                request_parsed.headers.get("User-Agent").unwrap(),
+                false,
+                connection_close,
+            )
         } else if path.starts_with("/echo") {
             let random_string = &path[6..];
             let accept_encoding_value = request_parsed.headers.get("Accept-Encoding");
             if accept_encoding_value.is_some() && accept_encoding_value.unwrap().contains("gzip") {
                 let compressed_body = gzip_compress(random_string);
-                response_with_body_compressed(compressed_body)
+                response_with_body_compressed(compressed_body, connection_close)
             } else {
-                response_with_body(random_string, false)
+                response_with_body(random_string, false, connection_close)
             }
         } else if path.starts_with("/files") {
             let file_name = &path[7..];
             let file_path = format!("{}/{}", dir.clone().unwrap(), file_name);
             if method == "GET" {
                 if let Ok(content) = fs::read_to_string(file_path) {
-                    response_with_body(&content, true)
+                    response_with_body(&content, true, connection_close)
                 } else {
                     Response::String("HTTP/1.1 404 Not Found\r\n\r\n".to_string())
                 }
@@ -136,13 +170,21 @@ fn handle_connection(stream: &mut TcpStream, dir: Option<String>) {
                 if body.len() != content_length_int {
                     Response::String("HTTP/1.1 400 Bad Request\r\n\r\n".to_string())
                 } else if fs::write(file_path, body).is_ok() {
-                    Response::String("HTTP/1.1 201 Created\r\n\r\n".to_string())
+                    if connection_close {
+                        Response::String(
+                            "HTTP/1.1 201 Created\r\nConnection: close\r\n\r\n".to_string(),
+                        )
+                    } else {
+                        Response::String("HTTP/1.1 201 Created\r\n\r\n".to_string())
+                    }
                 } else {
                     Response::String("HTTP/1.1 500 Internal Server Error\r\n\r\n".to_string())
                 }
             } else {
                 Response::String("HTTP/1.1 405 Method Not Allowed\r\n\r\n".to_string())
             }
+        } else if connection_close {
+            Response::String("HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n".to_string())
         } else {
             Response::String("HTTP/1.1 404 Not Found\r\n\r\n".to_string())
         };
@@ -153,10 +195,16 @@ fn handle_connection(stream: &mut TcpStream, dir: Option<String>) {
                     println!("error writing response: {}", e);
                     break;
                 }
+                if connection_close {
+                    break;
+                }
             }
             Response::Bytes(bytes) => {
                 if let Err(e) = stream.write_all(&bytes) {
                     println!("error writing response: {}", e);
+                    break;
+                }
+                if connection_close {
                     break;
                 }
             }
