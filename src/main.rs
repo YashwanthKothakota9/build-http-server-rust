@@ -48,6 +48,13 @@ fn request_parser(request: &str) -> Request {
     }
 }
 
+fn response_with_body_compressed(body: &str) -> String {
+    format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Encoding: gzip\r\n\r\n{}",
+        body
+    )
+}
+
 fn response_with_body(body: &str, file: bool) -> String {
     if file {
         return format!(
@@ -76,7 +83,13 @@ fn handle_connection(stream: &mut TcpStream, dir: Option<String>) {
     } else if path == "/user-agent" {
         response_with_body(request_parsed.headers.get("User-Agent").unwrap(), false)
     } else if path.starts_with("/echo") {
-        response_with_body(&path[6..], false)
+        let random_string = &path[6..];
+        let accept_encoding_value = request_parsed.headers.get("Accept-Encoding");
+        if accept_encoding_value.is_some() && accept_encoding_value.unwrap().contains("gzip") {
+            response_with_body_compressed(random_string)
+        } else {
+            response_with_body(random_string, false)
+        }
     } else if path.starts_with("/files") {
         let file_name = &path[7..];
         let file_path = format!("{}/{}", dir.unwrap(), file_name);
