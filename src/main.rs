@@ -1,3 +1,4 @@
+use flate2::{write::GzEncoder, Compression};
 #[allow(unused_imports)]
 use std::net::TcpListener;
 use std::{
@@ -7,13 +8,18 @@ use std::{
     net::TcpStream,
     thread,
 };
-
 #[derive(Debug)]
 struct Request {
     method: String,
     path: String,
     headers: HashMap<String, String>,
     body: String,
+}
+
+#[derive(Debug)]
+enum Response {
+    String(String),
+    Bytes(Vec<u8>),
 }
 
 fn request_parser(request: &str) -> Request {
@@ -48,26 +54,35 @@ fn request_parser(request: &str) -> Request {
     }
 }
 
-fn response_with_body_compressed(body: &str) -> String {
-    format!(
-        "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Encoding: gzip\r\n\r\n{}",
-        body
-    )
+fn gzip_compress(body: &str) -> Vec<u8> {
+    let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+    encoder.write_all(body.as_bytes()).unwrap();
+    encoder.finish().unwrap()
 }
 
-fn response_with_body(body: &str, file: bool) -> String {
+fn response_with_body_compressed(body: Vec<u8>) -> Response {
+    let header = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Encoding: gzip\r\nContent-Length: {}\r\n\r\n",
+        body.len()
+    );
+    let mut response = header.into_bytes();
+    response.extend(body);
+    Response::Bytes(response)
+}
+
+fn response_with_body(body: &str, file: bool) -> Response {
     if file {
-        return format!(
+        return Response::String(format!(
             "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: {}\r\n\r\n{}",
             body.len(),
             body
-        );
+        ));
     }
-    format!(
+    Response::String(format!(
         "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\n\r\n{}",
         body.len(),
         body
-    )
+    ))
 }
 
 fn handle_connection(stream: &mut TcpStream, dir: Option<String>) {
@@ -79,14 +94,15 @@ fn handle_connection(stream: &mut TcpStream, dir: Option<String>) {
     let path = &request_parsed.path;
     let method = &request_parsed.method;
     let response = if path == "/" {
-        "HTTP/1.1 200 OK\r\n\r\n".to_string()
+        Response::String("HTTP/1.1 200 OK\r\n\r\n".to_string())
     } else if path == "/user-agent" {
         response_with_body(request_parsed.headers.get("User-Agent").unwrap(), false)
     } else if path.starts_with("/echo") {
         let random_string = &path[6..];
         let accept_encoding_value = request_parsed.headers.get("Accept-Encoding");
         if accept_encoding_value.is_some() && accept_encoding_value.unwrap().contains("gzip") {
-            response_with_body_compressed(random_string)
+            let compressed_body = gzip_compress(random_string);
+            response_with_body_compressed(compressed_body)
         } else {
             response_with_body(random_string, false)
         }
@@ -97,26 +113,34 @@ fn handle_connection(stream: &mut TcpStream, dir: Option<String>) {
             if let Ok(content) = fs::read_to_string(file_path) {
                 response_with_body(&content, true)
             } else {
-                "HTTP/1.1 404 Not Found\r\n\r\n".to_string()
+                Response::String("HTTP/1.1 404 Not Found\r\n\r\n".to_string())
             }
         } else if method == "POST" {
             let content_length = request_parsed.headers.get("Content-Length").unwrap();
             let content_length_int = content_length.parse::<usize>().unwrap();
             let body = request_parsed.body;
             if body.len() != content_length_int {
-                "HTTP/1.1 400 Bad Request\r\n\r\n".to_string()
+                Response::String("HTTP/1.1 400 Bad Request\r\n\r\n".to_string())
             } else if fs::write(file_path, body).is_ok() {
-                "HTTP/1.1 201 Created\r\n\r\n".to_string()
+                Response::String("HTTP/1.1 201 Created\r\n\r\n".to_string())
             } else {
-                "HTTP/1.1 500 Internal Server Error\r\n\r\n".to_string()
+                Response::String("HTTP/1.1 500 Internal Server Error\r\n\r\n".to_string())
             }
         } else {
-            "HTTP/1.1 405 Method Not Allowed\r\n\r\n".to_string()
+            Response::String("HTTP/1.1 405 Method Not Allowed\r\n\r\n".to_string())
         }
     } else {
-        "HTTP/1.1 404 Not Found\r\n\r\n".to_string()
+        Response::String("HTTP/1.1 404 Not Found\r\n\r\n".to_string())
     };
-    stream.write_all(response.as_bytes()).unwrap();
+
+    match response {
+        Response::String(str_response) => {
+            stream.write_all(str_response.as_bytes()).unwrap();
+        }
+        Response::Bytes(bytes) => {
+            stream.write_all(&bytes).unwrap();
+        }
+    }
     stream.flush().unwrap();
 }
 
