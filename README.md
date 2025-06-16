@@ -14,7 +14,7 @@ and more.
 <h1 align="center">HTTP Server from scratch in Rust</h1>
 
 <div align="center">
-    <img src="/image.png" alt="Project completion image">
+    <img src="/rust-image.png" alt="Project completion image">
 </div>
 
 
